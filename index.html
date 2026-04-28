@@ -334,7 +334,7 @@ function showSyncBar() {
 }
 
 /* ── Apps Script Web App helpers ── */
-const APPS_URL = 'https://script.google.com/macros/s/AKfycbz0hrt6SfA_YL8ZorJ9RRxkzOStw77bqXZ_OPIG-9lxORW9v9Ii6U0OnH50HzimxWP1/exec';
+const APPS_URL = 'https://script.google.com/macros/s/AKfycbxb3XtUDX04nYyyRvCxq7LuQN7OG3DQbR6jBFsCacmVNiiHEGR3jbJa2AnX722Lq4Lr/exec';
 
 async function sheetsGet(sheetName) {
   const url = APPS_URL + '?sheet=' + encodeURIComponent(sheetName);
@@ -367,7 +367,7 @@ function rowsToProjects(rows) {
     return {
       id: o.id, name: o.name, status: o.status, owner: o.owner,
       priority: o.priority, projectGroup: o.projectGroup,
-      rockRelated: o.rockRelated === 'true',
+      rockRelated: parseBool(o.rockRelated),
       progress: parseInt(o.progress)||0,
       startDate: o.startDate, estCompletionDate: o.estCompletionDate,
       completionDate: o.completionDate,
@@ -396,7 +396,7 @@ function rowsToTodos(rows) {
   return data.map(r => {
     const o = {};
     hdr.forEach((h,i) => o[h] = r[i]||'');
-    return { id:o.id, projectId:o.projectId, text:o.text, owner:o.owner, priority:o.priority, dueDate:o.dueDate, done:o.done==='true' };
+    return { id:o.id, projectId:o.projectId, text:o.text, owner:o.owner, priority:o.priority, dueDate:o.dueDate, done:parseBool(o.done) };
   }).filter(t => t.id);
 }
 
@@ -407,13 +407,15 @@ function todosToRows(todos) {
   return rows;
 }
 
+function parseBool(v) { return v === true || v === 'true' || v === 'TRUE'; }
+
 function rowsToAdHoc(rows) {
   if (!rows.length) return [];
   const [hdr, ...data] = rows;
   return data.map(r => {
     const o = {};
-    hdr.forEach((h,i) => o[h] = r[i]||'');
-    return { id:o.id, text:o.text, notes:o.notes, owner:o.owner, priority:o.priority, dueDate:o.dueDate, done:o.done==='true' };
+    hdr.forEach((h,i) => o[h] = r[i] !== undefined ? r[i] : '');
+    return { id:o.id, text:o.text, notes:o.notes, owner:o.owner, priority:o.priority, dueDate:o.dueDate, done:parseBool(o.done) };
   }).filter(t => t.id);
 }
 
@@ -430,7 +432,7 @@ function rowsToGoals(rows) {
   return data.map(r => {
     const o = {};
     hdr.forEach((h,i) => o[h] = r[i]||'');
-    return { id:o.id, title:o.title, description:o.description, owner:o.owner, deadline:o.deadline, achieved:o.achieved==='true' };
+    return { id:o.id, title:o.title, description:o.description, owner:o.owner, deadline:o.deadline, achieved:parseBool(o.achieved) };
   }).filter(g => g.id);
 }
 
@@ -483,7 +485,7 @@ function rowsToTrainingTodos(rows) {
   return data.map(r => {
     const o = {};
     hdr.forEach((h,i) => o[h] = r[i]||'');
-    return { id:o.id, trainingId:o.trainingId, text:o.text, owner:o.owner, dueDate:o.dueDate, done:o.done==='true' };
+    return { id:o.id, trainingId:o.trainingId, text:o.text, owner:o.owner, dueDate:o.dueDate, done:parseBool(o.done) };
   }).filter(t => t.id);
 }
 
