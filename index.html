@@ -88,6 +88,8 @@
   /* ── Avatar ── */
   .avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--info-bg); color: var(--info); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; border: 1.5px solid #d0dff5; }
   .avatar-sm { width: 22px; height: 22px; font-size: 9px; }
+  .avatar-manager { background: #fce7f3; color: #be185d; border-color: #f9a8d4; }
+  .avatar-analyst { background: #ede9fe; color: #7c3aed; border-color: #c4b5fd; }
   .owner-row { display: flex; align-items: center; gap: 7px; }
 
   /* ── Detail cards (overview) ── */
@@ -191,6 +193,8 @@
   .member-section { margin-bottom: 28px; }
   .member-header { display:flex; align-items:center; gap:12px; margin-bottom:10px; padding-bottom:8px; border-bottom:2px solid var(--border); }
   .member-avatar { width:36px; height:36px; border-radius:50%; background:var(--info-bg); color:var(--info); display:inline-flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; flex-shrink:0; border:2px solid #d0dff5; }
+  .member-avatar.avatar-manager { background: #fce7f3; color: #be185d; border-color: #f9a8d4; }
+  .member-avatar.avatar-analyst { background: #ede9fe; color: #7c3aed; border-color: #c4b5fd; }
   .member-name { font-size:16px; font-weight:600; color:var(--text); letter-spacing:-0.01em; }
   .member-task-count { font-size:12px; color:var(--text3); margin-left:4px; }
   .master-todo-source { font-size:10px; font-weight:600; color:var(--text3); text-transform:uppercase; letter-spacing:0.06em; background:var(--surface2); padding:2px 7px; border-radius:100px; white-space:nowrap; }
@@ -345,16 +349,37 @@ async function sheetsGet(sheetName) {
   return d.values || [];
 }
 
-async function sheetsUpdate(sheetName, values) {
+async function sheetsUpdate(sheetName, values, notify) {
+  const body = { sheet: sheetName, values };
+  if (notify && notify.length) body.notify = notify;
   const r = await fetch(APPS_URL, {
     method: 'POST',
     headers: {'Content-Type': 'text/plain'},
-    body: JSON.stringify({ sheet: sheetName, values })
+    body: JSON.stringify(body)
   });
   if (!r.ok) throw new Error('POST failed: ' + r.status);
   const d = await r.json();
   if (d.error) throw new Error(d.error);
   return d;
+}
+
+/* ── Notification helpers ── */
+// Tracks task+owner combos already notified so we only email on NEW assignments
+const _notifiedIds = new Set();
+
+function buildNotification(task, type, projectName) {
+  if (!task.owner || !task.id) return null;
+  const key = task.id + '::' + task.owner;
+  if (_notifiedIds.has(key)) return null; // already notified for this assignment
+  _notifiedIds.add(key);
+  return {
+    owner:       task.owner,
+    taskText:    task.text,
+    projectName: projectName || '',
+    dueDate:     task.dueDate ? fmtDate(task.dueDate) : '',
+    priority:    task.priority || '',
+    type:        type
+  };
 }
 
 /* ── Serialisation helpers ── */
@@ -553,13 +578,16 @@ async function saveState() {
 
     await Promise.all([
       sheetsUpdate('Projects', projectsToRows(state.projects)),
-      sheetsUpdate('Todos', todosToRows(allTodos)),
-      sheetsUpdate('AdHocTasks', adHocToRows(state.adHocTasks||[])),
+      sheetsUpdate('Todos', todosToRows(allTodos), state._pendingNotify||[]),
+      sheetsUpdate('AdHocTasks', adHocToRows(state.adHocTasks||[]), state._pendingAdHocNotify||[]),
       sheetsUpdate('Goals', goalsToRows(state.teamGoals||[])),
       sheetsUpdate('ExcelReports', excelReportsToRows(state.excelReports||[])),
       sheetsUpdate('Trainings', trainingsToRows(state.trainings||[])),
-      sheetsUpdate('TrainingTodos', trainingTodosToRows(allTrainTodos)),
+      sheetsUpdate('TrainingTodos', trainingTodosToRows(allTrainTodos), state._pendingTrainingNotify||[]),
     ]);
+    state._pendingNotify = [];
+    state._pendingAdHocNotify = [];
+    state._pendingTrainingNotify = [];
 
     showToast('Saved to Google Sheets ✓', false);
   } catch(e) {
@@ -570,7 +598,7 @@ async function saveState() {
   if (pendingSave) { pendingSave = false; saveState(); }
 }
 
-const OWNER_OPTIONS = ['Data Team Manager', 'Data Analyst'];
+const OWNER_OPTIONS = ['Manager', 'Analyst'];
 const STAKEHOLDER_OPTIONS = ['Matt Rayburn','Steve Burgess','Alfie S.','Alyssa Popa','Aaron O.','Holland B.'];
 const PROJECT_PRIORITY_OPTIONS = ['Very Low','Low','Important','Very Important','Urgent'];
 const TASK_PRIORITY_OPTIONS = ['Urgent','Very Important','Important','Low','Very Low'];
@@ -629,6 +657,15 @@ const DEFAULT_PROJECTS = [
 /* ── Helpers ── */
 function uid() { return 'x'+Math.random().toString(36).slice(2,9); }
 function initials(n) { return (n||'?').split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase(); }
+function avatarClass(n) {
+  if ((n||'').toLowerCase().includes('manager')) return 'avatar-manager';
+  if ((n||'').toLowerCase().includes('analyst')) return 'avatar-analyst';
+  return '';
+}
+function avatarHtml(n, sm) {
+  const szCls = sm ? 'avatar avatar-sm' : 'avatar';
+  return `<span class="${szCls} ${avatarClass(n)}">${initials(n)}</span>`;
+}
 function fmtDate(d) {
   if(!d) return '—';
   return new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
@@ -769,7 +806,7 @@ function renderMaster() {
         <div class="meta-block">
           <div class="meta-label">Owner</div>
           <div class="owner-row" style="margin-top:2px">
-            <span class="avatar">${initials(p.owner)}</span>
+            ${avatarHtml(p.owner)}
             <span style="font-size:13px">${esc(p.owner||'—')}</span>
           </div>
         </div>
@@ -900,7 +937,7 @@ function renderProject(id) {
         <div class="detail-field">
           <div class="field-label">Owner</div>
           <div class="owner-row" style="margin-top:4px">
-            <span class="avatar">${initials(p.owner)}</span>
+            ${avatarHtml(p.owner)}
             <span class="field-value">${esc(p.owner||'—')}</span>
           </div>
         </div>
@@ -1062,7 +1099,7 @@ function todoItemHtml(t, pid) {
     <div class="todo-meta">
       ${taskPriorityHtml(t.priority)}
       ${t.dueDate?`<span class="todo-due ${ov?'overdue':''}">${ov?'Overdue · ':''}${fmtDate(t.dueDate)}</span>`:''}
-      ${t.owner?`<div class="todo-owner"><span class="avatar avatar-sm">${initials(t.owner)}</span>${esc(t.owner)}</div>`:''}
+      ${t.owner?`<div class="todo-owner">${avatarHtml(t.owner, true)}${esc(t.owner)}</div>`:''}
       <button class="btn btn-sm btn-edit btn-icon" onclick="openEditTodo('${pid}','${t.id}')" title="Edit task">✎</button>
       <button class="btn btn-sm btn-danger btn-icon" onclick="deleteTodo('${pid}','${t.id}')" title="Delete task">×</button>
     </div>
@@ -1123,7 +1160,7 @@ function renderAdHoc() {
       <div class="todo-meta">
         ${taskPriorityHtml(t.priority)}
         ${t.dueDate?`<span class="todo-due ${ov?'overdue':''}">${ov?'Overdue · ':''}${fmtDate(t.dueDate)}</span>`:''}
-        ${t.owner?`<div class="todo-owner"><span class="avatar avatar-sm">${initials(t.owner)}</span>${esc(t.owner)}</div>`:''}
+        ${t.owner?`<div class="todo-owner">${avatarHtml(t.owner, true)}${esc(t.owner)}</div>`:''}
         <button class="btn btn-sm btn-edit btn-icon" onclick="openEditAdHoc('${t.id}')" title="Edit">✎</button>
         <button class="btn btn-sm btn-danger btn-icon" onclick="deleteAdHoc('${t.id}')" title="Delete">×</button>
       </div>
@@ -1225,7 +1262,7 @@ function renderGoals() {
       ${g.description?`<div class="goal-card-desc">${esc(g.description)}</div>`:''}
       <div class="goal-card-meta">
         ${g.deadline?`<span class="goal-deadline ${ds}"><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="1" y="2" width="10" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 1v2M8 1v2M1 5h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>${dl}</span>`:''}
-        ${g.owner?`<div class="todo-owner"><span class="avatar avatar-sm">${initials(g.owner)}</span>${esc(g.owner)}</div>`:''}
+        ${g.owner?`<div class="todo-owner">${avatarHtml(g.owner, true)}${esc(g.owner)}</div>`:''}
       </div>
     </div>`;
   }
@@ -1368,7 +1405,7 @@ function renderExcel() {
         ${r.notes?`<div class="report-meta">${esc(r.notes)}</div>`:''}
       </td>
       <td>
-        ${r.owner?`<div style="display:flex;align-items:center;gap:6px;"><span class="avatar avatar-sm">${initials(r.owner)}</span><span style="font-size:13px;">${esc(r.owner)}</span></div>`:'<span style="color:var(--text3)">—</span>'}
+        ${r.owner?`<div style="display:flex;align-items:center;gap:6px;">${avatarHtml(r.owner, true)}<span style="font-size:13px;">${esc(r.owner)}</span></div>`:'<span style="color:var(--text3)">—</span>'}
       </td>
       <td><span class="freq-badge">${esc(r.frequency||'—')}</span></td>
       <td style="font-size:13px;color:var(--text2);white-space:nowrap;">${esc(r.dayTime||'—')}</td>`;
@@ -1495,7 +1532,7 @@ function renderTraining() {
               <div class="training-todo-text ${t.done?'done':''}">${esc(t.text)}</div>
               <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;flex-wrap:wrap;">
                 ${t.dueDate?`<span class="todo-due ${ov?'overdue':''}">${ov?'Overdue · ':''}${fmtDate(t.dueDate)}</span>`:''}
-                ${t.owner?`<div class="todo-owner"><span class="avatar avatar-sm">${initials(t.owner)}</span>${esc(t.owner)}</div>`:''}
+                ${t.owner?`<div class="todo-owner">${avatarHtml(t.owner, true)}${esc(t.owner)}</div>`:''}
                 <button class="btn btn-sm btn-edit btn-icon" onclick="openEditTrainingTodo('${tr.id}','${t.id}')" title="Edit">✎</button>
                 <button class="btn btn-sm btn-danger btn-icon" onclick="deleteTrainingTodo('${tr.id}','${t.id}')">×</button>
               </div>
@@ -1602,7 +1639,7 @@ function renderMasterTodos() {
 
     html += `<div class="member-section">
       <div class="member-header">
-        <span class="member-avatar">${initials(owner)}</span>
+        <span class="member-avatar ${avatarClass(owner)}">${initials(owner)}</span>
         <span class="member-name">${esc(owner)}</span>
         <span class="member-task-count">${openCount} open · ${tasks.length} total</span>
       </div>
@@ -1848,7 +1885,10 @@ function saveNewTrainingTodo(tid) {
   const text=document.getElementById('trt-text').value.trim(); if(!text) return;
   const tr=state.trainings.find(x=>x.id===tid); if(!tr) return;
   if(!tr.todos) tr.todos=[];
-  tr.todos.push({ id:uid(), text, owner:document.getElementById('trt-owner').value, dueDate:document.getElementById('trt-due').value, done:false });
+  const newTask = { id:uid(), text, owner:document.getElementById('trt-owner').value, dueDate:document.getElementById('trt-due').value, done:false };
+  tr.todos.push(newTask);
+  const notif = buildNotification(newTask, 'training', tr.name);
+  if (notif) { if(!state._pendingTrainingNotify) state._pendingTrainingNotify=[]; state._pendingTrainingNotify.push(notif); }
   closeModal(); saveState(); render();
 }
 function openEditTrainingTodo(tid, todoId) {
@@ -1860,7 +1900,13 @@ function saveEditTrainingTodo(tid, todoId) {
   const text=document.getElementById('trt-text').value.trim(); if(!text) return;
   const tr=state.trainings.find(x=>x.id===tid); if(!tr) return;
   const t=tr.todos.find(x=>x.id===todoId); if(!t) return;
+  const prevOwner = t.owner;
   t.text=text; t.owner=document.getElementById('trt-owner').value; t.dueDate=document.getElementById('trt-due').value;
+  if (t.owner && t.owner !== prevOwner) {
+    _notifiedIds.delete(t.id + '::' + t.owner);
+    const notif = buildNotification(t, 'training', tr.name);
+    if (notif) { if(!state._pendingTrainingNotify) state._pendingTrainingNotify=[]; state._pendingTrainingNotify.push(notif); }
+  }
   closeModal(); saveState(); render();
 }
 function toggleTrainingTodo(tid, todoId) {
@@ -2010,7 +2056,10 @@ function openNewAdHoc() { openModal(adHocForm('Add task','saveNewAdHoc()',null))
 function saveNewAdHoc() {
   const text=document.getElementById('ah-text').value.trim(); if(!text) return;
   if(!state.adHocTasks) state.adHocTasks=[];
-  state.adHocTasks.push({ id:uid(), text, notes:document.getElementById('ah-notes').value.trim(), owner:document.getElementById('ah-owner').value, priority:document.getElementById('ah-priority').value, dueDate:document.getElementById('ah-due').value, done:false });
+  const newTask = { id:uid(), text, notes:document.getElementById('ah-notes').value.trim(), owner:document.getElementById('ah-owner').value, priority:document.getElementById('ah-priority').value, dueDate:document.getElementById('ah-due').value, done:false };
+  state.adHocTasks.push(newTask);
+  const notif = buildNotification(newTask, 'adhoc', 'Ad Hoc');
+  if (notif) { if(!state._pendingAdHocNotify) state._pendingAdHocNotify=[]; state._pendingAdHocNotify.push(notif); }
   closeModal(); render(); saveAdHocTasks();
 }
 function openEditAdHoc(tid) {
@@ -2022,7 +2071,13 @@ function saveEditAdHoc(tid) {
   const text=document.getElementById('ah-text').value.trim(); if(!text) return;
   const t=state.adHocTasks.find(x=>x.id===tid);
   if(!t) return;
+  const prevOwner = t.owner;
   t.text=text; t.notes=document.getElementById('ah-notes').value.trim(); t.owner=document.getElementById('ah-owner').value; t.priority=document.getElementById('ah-priority').value; t.dueDate=document.getElementById('ah-due').value;
+  if (t.owner && t.owner !== prevOwner) {
+    _notifiedIds.delete(t.id + '::' + t.owner);
+    const notif = buildNotification(t, 'adhoc', 'Ad Hoc');
+    if (notif) { if(!state._pendingAdHocNotify) state._pendingAdHocNotify=[]; state._pendingAdHocNotify.push(notif); }
+  }
   closeModal(); render(); saveAdHocTasks();
 }
 
@@ -2046,7 +2101,10 @@ function openNewTodo(pid) { openModal(todoForm('Add task',`saveNewTodo('${pid}')
 function saveNewTodo(pid) {
   const text=document.getElementById('td-text').value.trim(); if(!text) return;
   const p=state.projects.find(x=>x.id===pid);
-  p.todos.push({ id:uid(), text, owner:document.getElementById('td-owner').value, priority:document.getElementById('td-priority').value, dueDate:document.getElementById('td-due').value, done:false });
+  const newTask = { id:uid(), text, owner:document.getElementById('td-owner').value, priority:document.getElementById('td-priority').value, dueDate:document.getElementById('td-due').value, done:false };
+  p.todos.push(newTask);
+  const notif = buildNotification(newTask, 'project', p.name);
+  if (notif) { if(!state._pendingNotify) state._pendingNotify=[]; state._pendingNotify.push(notif); }
   closeModal(); saveState(); render();
 }
 function openEditTodo(pid,tid) {
@@ -2056,7 +2114,14 @@ function openEditTodo(pid,tid) {
 function saveEditTodo(pid,tid) {
   const text=document.getElementById('td-text').value.trim(); if(!text) return;
   const p=state.projects.find(x=>x.id===pid), t=p.todos.find(x=>x.id===tid);
+  const prevOwner = t.owner;
   t.text=text; t.owner=document.getElementById('td-owner').value; t.priority=document.getElementById('td-priority').value; t.dueDate=document.getElementById('td-due').value;
+  // Notify if owner changed to someone new
+  if (t.owner && t.owner !== prevOwner) {
+    _notifiedIds.delete(t.id + '::' + t.owner); // allow re-notify for new owner
+    const notif = buildNotification(t, 'project', p.name);
+    if (notif) { if(!state._pendingNotify) state._pendingNotify=[]; state._pendingNotify.push(notif); }
+  }
   closeModal(); saveState(); render();
 }
 
